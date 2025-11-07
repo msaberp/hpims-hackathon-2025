@@ -57,6 +57,12 @@ class AdherenceAnalyzer:
 
             logger.info(f"Query returned {len(df)} rows and {len(df.columns)} columns")
 
+            # Convert Decimal columns to float for pandas compatibility
+            from decimal import Decimal
+            for col in df.columns:
+                if len(df) > 0 and isinstance(df[col].iloc[0], Decimal):
+                    df[col] = df[col].astype(float)
+
             return df
 
         except Exception as e:
