@@ -381,7 +381,7 @@ class AdherenceAnalyzer:
 
             FROM patient_drug_summary
             WHERE treatment_duration >= {min_treatment_days}
-        )
+        ),
 
         -- Get patient conditions (simplified - no nested window functions)
         condition_counts AS (
