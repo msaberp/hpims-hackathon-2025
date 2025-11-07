@@ -383,7 +383,40 @@ class AdherenceAnalyzer:
             WHERE treatment_duration >= {min_treatment_days}
         )
 
-        -- Join with concept table for drug names AND person table for age
+        -- Get patient conditions (simple approach)
+        patient_conditions AS (
+            SELECT
+                co.person_id,
+
+                -- Count total conditions
+                COUNT(DISTINCT co.condition_concept_id) AS condition_count,
+
+                -- Get most common condition (primary diagnosis)
+                FIRST_VALUE(cc.concept_name) OVER (
+                    PARTITION BY co.person_id
+                    ORDER BY COUNT(*) OVER (PARTITION BY co.person_id, co.condition_concept_id) DESC,
+                             co.condition_start_date DESC
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                ) AS primary_condition
+
+            FROM {self.schema}.CONDITION_OCCURRENCE co
+            LEFT JOIN {self.schema}.CONCEPT cc
+                ON co.condition_concept_id = cc.concept_id
+                AND cc.domain_id = 'Condition'
+            WHERE co.condition_start_date <= '{end_date}'
+            GROUP BY co.person_id, co.condition_concept_id, co.condition_start_date, cc.concept_name
+        ),
+
+        patient_condition_summary AS (
+            SELECT
+                person_id,
+                MAX(condition_count) AS total_conditions,
+                MAX(primary_condition) AS primary_condition_name
+            FROM patient_conditions
+            GROUP BY person_id
+        )
+
+        -- Join with concept table for drug names, person table for age, and conditions
         SELECT
             pdc.person_id,
             pdc.drug_concept_id,
@@ -392,6 +425,10 @@ class AdherenceAnalyzer:
 
             -- Age calculation (current year - birth year)
             (YEAR(CURRENT_DATE) - p.year_of_birth) AS age,
+
+            -- Condition information
+            COALESCE(pcs.primary_condition_name, 'No Condition Recorded') AS primary_condition,
+            COALESCE(pcs.total_conditions, 0) AS comorbidity_count,
 
             -- Ensure PDC is between 0 and 1 (cap at 1.0 if calculation error)
             CASE
@@ -421,6 +458,8 @@ class AdherenceAnalyzer:
             AND c.domain_id = 'Drug'  -- Only match drug concepts
         LEFT JOIN {self.schema}.PERSON p
             ON pdc.person_id = p.person_id
+        LEFT JOIN patient_condition_summary pcs
+            ON pdc.person_id = pcs.person_id
 
         WHERE c.concept_name IS NOT NULL  -- Filter out records with no matching drug concept
 
