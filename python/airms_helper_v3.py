@@ -383,37 +383,43 @@ class AdherenceAnalyzer:
             WHERE treatment_duration >= {min_treatment_days}
         )
 
-        -- Get patient conditions (simple approach)
-        patient_conditions AS (
+        -- Get patient conditions (simplified - no nested window functions)
+        condition_counts AS (
             SELECT
                 co.person_id,
-
-                -- Count total conditions
-                COUNT(DISTINCT co.condition_concept_id) AS condition_count,
-
-                -- Get most common condition (primary diagnosis)
-                FIRST_VALUE(cc.concept_name) OVER (
-                    PARTITION BY co.person_id
-                    ORDER BY COUNT(*) OVER (PARTITION BY co.person_id, co.condition_concept_id) DESC,
-                             co.condition_start_date DESC
-                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-                ) AS primary_condition
-
+                co.condition_concept_id,
+                cc.concept_name,
+                COUNT(*) AS occurrence_count
             FROM {self.schema}.CONDITION_OCCURRENCE co
             LEFT JOIN {self.schema}.CONCEPT cc
                 ON co.condition_concept_id = cc.concept_id
                 AND cc.domain_id = 'Condition'
             WHERE co.condition_start_date <= '{end_date}'
-            GROUP BY co.person_id, co.condition_concept_id, co.condition_start_date, cc.concept_name
+              AND cc.concept_name IS NOT NULL
+            GROUP BY co.person_id, co.condition_concept_id, cc.concept_name
+        ),
+
+        patient_primary_condition AS (
+            SELECT
+                person_id,
+                concept_name AS primary_condition_name,
+                ROW_NUMBER() OVER (
+                    PARTITION BY person_id
+                    ORDER BY occurrence_count DESC
+                ) AS rn
+            FROM condition_counts
         ),
 
         patient_condition_summary AS (
             SELECT
-                person_id,
-                MAX(condition_count) AS total_conditions,
-                MAX(primary_condition) AS primary_condition_name
-            FROM patient_conditions
-            GROUP BY person_id
+                cc.person_id,
+                COUNT(DISTINCT cc.condition_concept_id) AS total_conditions,
+                pc.primary_condition_name
+            FROM condition_counts cc
+            LEFT JOIN patient_primary_condition pc
+                ON cc.person_id = pc.person_id
+                AND pc.rn = 1
+            GROUP BY cc.person_id, pc.primary_condition_name
         )
 
         -- Join with concept table for drug names, person table for age, and conditions
