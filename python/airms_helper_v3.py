@@ -312,8 +312,11 @@ class AdherenceAnalyzer:
                 -- Adjusted days covered (subtract overlap to avoid double counting)
                 CASE
                     WHEN prev_end_date IS NOT NULL AND start_date <= prev_end_date
-                        THEN GREATEST(0, DAYS_BETWEEN(start_date, end_date) - DAYS_BETWEEN(start_date, prev_end_date))
-                    ELSE DAYS_BETWEEN(start_date, end_date) + 1
+                        -- Overlap case: only count days AFTER previous fill ended
+                        THEN GREATEST(0, DAYS_BETWEEN(start_date, end_date) + 1 - DAYS_BETWEEN(start_date, prev_end_date) - 1)
+                    ELSE
+                        -- No overlap: count all days
+                        DAYS_BETWEEN(start_date, end_date) + 1
                 END AS adjusted_days_covered
 
             FROM exposure_with_prev
@@ -384,13 +387,18 @@ class AdherenceAnalyzer:
         SELECT
             pdc.person_id,
             pdc.drug_concept_id,
-            c.concept_name AS drug_name,
+            COALESCE(c.concept_name, 'Unknown Drug') AS drug_name,
             c.concept_class_id,
 
             -- Age calculation (current year - birth year)
             (YEAR(CURRENT_DATE) - p.year_of_birth) AS age,
 
-            pdc.pdc,
+            -- Ensure PDC is between 0 and 1 (cap at 1.0 if calculation error)
+            CASE
+                WHEN pdc.pdc > 1.0 THEN 1.0
+                WHEN pdc.pdc < 0.0 THEN 0.0
+                ELSE pdc.pdc
+            END AS pdc,
 
             CASE
                 WHEN pdc.pdc >= {pdc_threshold} THEN 'Adherent'
@@ -410,8 +418,11 @@ class AdherenceAnalyzer:
         FROM patient_drug_pdc pdc
         LEFT JOIN {self.schema}.CONCEPT c
             ON pdc.drug_concept_id = c.concept_id
+            AND c.domain_id = 'Drug'  -- Only match drug concepts
         LEFT JOIN {self.schema}.PERSON p
             ON pdc.person_id = p.person_id
+
+        WHERE c.concept_name IS NOT NULL  -- Filter out records with no matching drug concept
 
         ORDER BY pdc.person_id, pdc.drug_concept_id
         """
